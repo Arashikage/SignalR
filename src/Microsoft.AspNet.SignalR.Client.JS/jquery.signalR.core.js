@@ -650,7 +650,8 @@
             // Add the client version to the negotiate request.  We utilize the same addQs method here
             // so that it can append the clientVersion appropriately to the URL
             url = signalR.transports._logic.addQs(url, {
-                clientProtocol: connection.clientProtocol
+                clientProtocol: connection.clientProtocol,
+                XHRProgress: signalR.transports.longPolling.supportsKeepAlive
             });
 
             connection.log("Negotiating with '" + url + "'.");

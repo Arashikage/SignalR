@@ -10,12 +10,26 @@
         events = $.signalR.events,
         changeState = $.signalR.changeState,
         isDisconnecting = $.signalR.isDisconnecting,
-        transportLogic = signalR.transports._logic;
+        transportLogic = signalR.transports._logic,
+        browserSupportsXHRProgress = function () {
+                try {
+                    var xhr = new window.XMLHttpRequest();
+
+                    if ('onprogress' in xhr) {
+                        return true;
+                    } else {
+                        return false;
+                    }
+                } catch (e) {
+                    // No XHR means no XHR progress event
+                    return false;
+                }
+            };
 
     signalR.transports.longPolling = {
         name: "longPolling",
 
-        supportsKeepAlive: false,
+        supportsKeepAlive: browserSupportsXHRProgress(),
 
         reconnectDelay: 3000,
 
@@ -83,7 +97,10 @@
                     connection.log("Opening long polling request to '" + url + "'.");
                     instance.pollXhr = $.ajax(
                         $.extend({}, $.signalR.ajaxDefaults, {
-                            xhrFields: { withCredentials: connection.withCredentials },
+                            xhrFields: {
+                                withCredentials: connection.withCredentials,
+                                onprogress: $.proxy(transportLogic.markLastMessage, null, connection)
+                            },
                             url: url,
                             type: "GET",
                             dataType: connection.ajaxDataType,
@@ -101,6 +118,7 @@
                                 reconnectErrors = 0;
 
                                 try {
+                                    // Remove any keep-alives from the beginning of the result
                                     minData = connection._parseResponse(result);
                                 }
                                 catch (error) {

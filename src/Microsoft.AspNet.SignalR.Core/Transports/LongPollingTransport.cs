@@ -10,6 +10,7 @@ using Microsoft.AspNet.SignalR.Infrastructure;
 using Microsoft.AspNet.SignalR.Json;
 using Microsoft.AspNet.SignalR.Tracing;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Microsoft.AspNet.SignalR.Transports
 {
@@ -18,6 +19,8 @@ namespace Microsoft.AspNet.SignalR.Transports
         private readonly JsonSerializer _jsonSerializer;
         private readonly IPerformanceCounterManager _counters;
         private readonly IConfigurationManager _configurationManager;
+
+        private readonly LongPollingTransportContext _keepAliveContext;
 
         // This should be ok to do since long polling request never hang around too long
         // so we won't bloat memory
@@ -45,6 +48,7 @@ namespace Microsoft.AspNet.SignalR.Transports
             _jsonSerializer = jsonSerializer;
             _counters = performanceCounterManager;
             _configurationManager = configurationManager;
+            _keepAliveContext = new LongPollingTransportContext(this, new JRaw(" "));
         }
 
         public override TimeSpan DisconnectThreshold
@@ -104,7 +108,7 @@ namespace Microsoft.AspNet.SignalR.Transports
         {
             get
             {
-                return false;
+                return true;
             }
         }
 
@@ -115,6 +119,13 @@ namespace Microsoft.AspNet.SignalR.Transports
         public Func<Task> Connected { get; set; }
 
         public Func<Task> Reconnected { get; set; }
+
+        public override Task KeepAlive()
+        {
+            Trace.TraceInformation("PreKeepAlive({0})", ConnectionId);
+            // Ensure delegate continues to use the C# Compiler static delegate caching optimization.
+            return EnqueueOperation(state => PerformSend(state), _keepAliveContext);
+        }
 
         public Task ProcessRequest(ITransportConnection connection)
         {
@@ -227,6 +238,10 @@ namespace Microsoft.AspNet.SignalR.Transports
 
             try
             {
+                // Ensure we enqueue the response initialization before any messages are received
+                EnqueueOperation(state => InitializeResponse((LongPollingTransport)state), this)
+                    .Catch((ex, state) => OnError(ex, state), messageContext);
+
                 // Ensure delegate continues to use the C# Compiler static delegate caching optimization.
                 IDisposable subscription = connection.Receive(MessageId,
                                                               (response, state) => OnMessageReceived(response, state),
@@ -245,6 +260,18 @@ namespace Microsoft.AspNet.SignalR.Transports
             }
 
             return _requestLifeTime.Task;
+        }
+
+        private static Task InitializeResponse(LongPollingTransport transport)
+        {
+            if (!transport.IsAlive)
+            {
+                return TaskAsyncHelper.Empty;
+            }
+
+            transport.Context.Response.ContentType = transport.IsJsonp ? JsonUtility.JavaScriptMimeType : JsonUtility.JsonMimeType; 
+
+            return transport.Context.Response.Flush();
         }
 
         private static void Cancel(object state)
@@ -312,8 +339,6 @@ namespace Microsoft.AspNet.SignalR.Transports
                 return TaskAsyncHelper.Empty;
             }
 
-            context.Transport.Context.Response.ContentType = context.Transport.IsJsonp ? JsonUtility.JavaScriptMimeType : JsonUtility.JsonMimeType; 
-
             if (context.Transport.IsJsonp)
             {
                 context.Transport.OutputWriter.Write(context.Transport.JsonpCallback);
@@ -328,6 +353,11 @@ namespace Microsoft.AspNet.SignalR.Transports
             }
 
             context.Transport.OutputWriter.Flush();
+
+            if (state == context.Transport._keepAliveContext)
+            {
+                context.Transport.Trace.TraceInformation("PostKeepAlive({0})", context.Transport.ConnectionId);
+            }
 
             return TaskAsyncHelper.Empty;
         }
